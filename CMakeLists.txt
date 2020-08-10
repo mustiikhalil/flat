@@ -12,13 +12,14 @@ option(FLAT_BUILD_TESTS "Enable the build of tests and samples." ON)
 
 set(FLATBUFFERS_SRC_DIR flatbuffers)
 set(FLAT_Library_SRCS
-  src/flat/variables.h
-  src/flat/flat.h
+  include/flat/variables.h
+  include/flat/flat.h
+  include/flat/JSON.h
   src/flat/flat.cpp
-  src/flat/JSON.h
 )
 
 set(Flat_Tests_SRCS
+  ${FLAT_Library_SRCS}
   tests/user_generated.h
   tests/numbers_generated.h
   src/flat/flat.cpp
@@ -37,10 +38,12 @@ if(FLAT_CODE_COVERAGE)
       "${CMAKE_EXE_LINKER_FLAGS} -fprofile-arcs -ftest-coverage")
 endif()
 
+include_directories(include)
+
 if(FLAT_BUILD_FLATLIB)
     add_library(flat STATIC ${FLAT_Library_SRCS})
     target_include_directories(flat INTERFACE 
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
     target_compile_options(flat PRIVATE "${FLAT_PRIVATE_CXX_FLAGS}")
 endif()
 
@@ -54,6 +57,7 @@ target_link_libraries(flat PRIVATE flatbuffers)
 
 
 if(FLAT_BUILD_TESTS)
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/tests" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
   include_directories(${CMAKE_CURRENT_BINARY_DIR}/tests)
   add_executable(tests ${Flat_Tests_SRCS})
   target_link_libraries(tests PRIVATE flat)
