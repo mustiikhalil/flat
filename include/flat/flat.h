@@ -1,6 +1,7 @@
 #ifndef flat_h
 #define flat_h
 
+#include <cctype>
 #include <iostream>
 #include <string>
 
@@ -8,6 +9,11 @@
 #include "variables.h"
 
 namespace flat {
+
+struct PrintScalarTag {};
+struct PrintPointerTag {};
+template<typename T> struct PrintTag { typedef PrintScalarTag type; };
+template<> struct PrintTag<const void *> { typedef PrintPointerTag type; };
 
 class FLAT {
  private:
@@ -22,8 +28,15 @@ class FLAT {
 
   void write(const std::string field_name, std::string &text,
              const std::string value) {
-    text +=
-        (std::string(inden_lvl, ' ') + "- " + field_name + ": " + value + "\n");
+    write(field_name, text, value, "- ", ": ", "\n", inden_lvl);
+  }
+
+  void write(const std::string field_name, std::string &text,
+             const std::string value, const std::string start,
+             const std::string separator, const std::string new_line,
+             int indent_by) {
+    text += (std::string(indent_by, ' ') + start + field_name + separator +
+             value + new_line);
   }
 
   /// Taken from  flatbuffers writing format to json
@@ -36,6 +49,50 @@ class FLAT {
       }
     }
     return flatbuffers::NumToString(val);
+  }
+
+  template<typename T>
+  std::string PrintVector(const void *val, const Type &type, int indent,
+                          const uint8_t *prev_val) {
+    typedef flatbuffers::Vector<T> Container;
+    typedef typename PrintTag<typename Container::return_type>::type tag;
+    auto &vec = *reinterpret_cast<const Container *>(val);
+    return PrintContainer<Container>(tag(), vec, vec.size(), type, indent,
+                                     prev_val);
+  }
+
+  template<typename Container>
+  std::string PrintContainer(PrintScalarTag, const Container &c, size_t size,
+                             const Type &type, int indent, const uint8_t *) {
+    std::string text = "\n";
+    write("", text, "", "[", "", "\n", indent);
+    for (uoffset_t i = 0; i < size; i++) {
+      std::string txt = PrintScalar(c[i], type);
+      write("", text, txt, ":: ", "", ",\n", indent + 2);
+    }
+    write("", text, "", "]", "", "\n", indent);
+    return text;
+  }
+
+  template<typename Container>
+  std::string PrintContainer(PrintPointerTag, const Container &c, size_t size,
+                             const Type &type, int indent,
+                             const uint8_t *prev_val) {
+    std::string text = "\n";
+    const auto is_struct = IsStruct(type);
+    write("", text, "", "[", "", "\n", indent);
+    incrementIndentation();
+    for (uoffset_t i = 0; i < size; i++) {
+      auto ptr = is_struct ? reinterpret_cast<const void *>(
+                                 c.Data() + type.struct_def->bytesize * i)
+                           : c[i];
+      std::string txt =
+          ReadFields(ptr, type, prev_val, static_cast<soffset_t>(i), false);
+      write("", text, txt, ":: ", "", ",\n", indent + 2);
+    }
+    decrementIndentation();
+    write("", text, "", "]", "", "\n", indent);
+    return text;
   }
 
   template<typename T> static T GetFieldDefault(const FieldDef &fd) {
@@ -86,6 +143,41 @@ class FLAT {
     }
   }
 
+  std::string ReadVectorContants(const void *val, const Type &type, int indent,
+                                 const uint8_t *prev_val) {
+    switch (type.base_type) {
+      case flatbuffers::BASE_TYPE_NONE:
+        return PrintVector<uint8_t>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_UTYPE:
+        return PrintVector<uint8_t>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_BOOL:
+        return PrintVector<bool>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_CHAR:
+        return PrintVector<int8_t>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_UCHAR:
+        return PrintVector<uint8_t>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_SHORT:
+        return PrintVector<short>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_USHORT:
+        return PrintVector<ushort>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_INT:
+        return PrintVector<int>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_UINT:
+        return PrintVector<uint>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_LONG:
+        return PrintVector<int64_t>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_ULONG:
+        return PrintVector<uint64_t>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_FLOAT:
+        return PrintVector<float>(val, type, indent, prev_val);
+      case flatbuffers::BASE_TYPE_DOUBLE:
+        return PrintVector<double>(val, type, indent, prev_val);
+      default:
+        return PrintVector<flatbuffers::Offset<void>>(val, type, indent,
+                                                      prev_val);
+    }
+  }
+
   std::string GetOffset(const FieldDef &fd, const Table *table,
                         const StructDef &struct_def, const uint8_t *prev_val,
                         const bool fixed) {
@@ -103,7 +195,8 @@ class FLAT {
 
   std::string ReadFields(const void *val, const Type &type,
                          const uint8_t *prev_val,
-                         flatbuffers::soffset_t vector_index) {
+                         flatbuffers::soffset_t vector_index,
+                         bool should_include_separator = true) {
     std::string text;
     switch (type.base_type) {
       case flatbuffers::BASE_TYPE_STRING: {
@@ -115,8 +208,15 @@ class FLAT {
         std::string text = "\n";
         std::string type_ = flatbuffers::IsStruct(type) ? "Struct" : "Table";
         incrementIndentation();
+        auto name = type.struct_def->name;
+        if (should_include_separator) {
+          write(type_, text, name + " -");
+        } else {
+          text = "";
+          write(type_, text, name, "", ": ", "\n", 0);
+        }
         GenerateBody(reinterpret_cast<const Table *>(val), *type.struct_def,
-                     text, type_);
+                     text);
         decrementIndentation();
         return text.substr(0, text.size() - 1) + "";
       }
@@ -138,10 +238,13 @@ class FLAT {
         }
       }
       case flatbuffers::BASE_TYPE_ARRAY: {
-          
-          return "[]";
+        // TODO: - Currently not needed however if required later on it should be implemented
+        return "[]";
       }
-      case flatbuffers::BASE_TYPE_VECTOR: return "[]";
+      case flatbuffers::BASE_TYPE_VECTOR: {
+        const auto vec_type = type.VectorType();
+        return ReadVectorContants(val, vec_type, inden_lvl + 2, prev_val);
+      };
       default: return "UNKNOWN";
     }
   }
@@ -153,8 +256,7 @@ class FLAT {
   }
 
   void GenerateBody(const Table *table, const StructDef &struct_def,
-                    std::string &text, const std::string &body_type) {
-    write(body_type, text, struct_def.name + " -");
+                    std::string &text) {
     incrementIndentation();
     const uint8_t *ptr = nullptr;
     for (auto it = struct_def.fields.vec.begin();
@@ -178,7 +280,8 @@ class FLAT {
 
   void GenerateFlat(const Table *table, const StructDef &struct_def) {
     std::string text;
-    GenerateBody(table, struct_def, text, "RootType");
+    write("RootType", text, struct_def.name + " -");
+    GenerateBody(table, struct_def, text);
     gen_code += text;
     decrementIndentation();
     gen_code += "----";
